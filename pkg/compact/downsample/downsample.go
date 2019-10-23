@@ -327,19 +327,33 @@ func downsampleRaw(data []sample, resolution int64) []chunks.Meta {
 		for ; j < len(data) && data[j].t <= curW; j++ {
 		}
 
-		ab := newAggrChunkBuilder()
 		batch := data[:j]
 		data = data[j:]
 
-		lastT := downsampleBatch(batch, resolution, ab.add)
-
-		// InjectThanosMeta the chunk's counter aggregate with the last true sample.
-		ab.finalizeChunk(lastT, batch[len(batch)-1].v)
-
-		chks = append(chks, ab.encode())
+		chks = append(chks, downsampleOneBatch(batch, resolution))
 	}
 
 	return chks
+}
+
+// downsample a single batch of raw points to a single chunk.
+func downsampleOneBatch(batch []sample, resolution int64) chunks.Meta {
+	ab := newAggrChunkBuilder()
+	lastT := downsampleBatch(batch, resolution, ab.add)
+	ab.finalizeChunk(lastT, batch[len(batch)-1].v)
+	return ab.encode()
+}
+
+// Proof-of-concept: same as downsampleOneBatch, but initialize the counter
+// aggregation with the first raw sample value of this batch.
+func downsampleOneBatchWithFirstRaw(batch []sample, resolution int64) chunks.Meta {
+	ab := newAggrChunkBuilder()
+
+	ab.apps[AggrCounter].Append(batch[0].t, batch[0].v)
+
+	lastT := downsampleBatch(batch, resolution, ab.add)
+	ab.finalizeChunk(lastT, batch[len(batch)-1].v)
+	return ab.encode()
 }
 
 // downsampleBatch aggregates the data over the given resolution and calls add each time

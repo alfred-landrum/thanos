@@ -23,6 +23,58 @@ import (
 	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
+func counterIterate(t *testing.T, cm ...chunks.Meta) []sample {
+	var chkiters []chunkenc.Iterator
+	for i := range cm {
+		chk, err := cm[i].Chunk.(*AggrChunk).Get(AggrCounter)
+		if err != nil {
+			t.FailNow()
+		}
+		chkiters = append(chkiters, chk.Iterator(nil))
+	}
+
+	var res []sample
+	citer := NewCounterSeriesIterator(chkiters...)
+	for citer.Next() {
+		t, v := citer.At()
+		res = append(res, sample{t: t, v: v})
+	}
+	return res
+}
+
+func TestIssue1568(t *testing.T) {
+
+	// two raw sections of the same counter series, note reset between t=30 and t=40
+	resolution := int64(35)
+	section1 := []sample{{t: 10, v: 1}, {t: 20, v: 2}, {t: 30, v: 3}}
+	section2 := []sample{{t: 40, v: 2}, {t: 50, v: 3}, {t: 60, v: 4}}
+
+	// create aggregated chunks before and after the reset
+	chunk1 := downsampleOneBatch(section1, resolution)
+	chunk2 := downsampleOneBatch(section2, resolution)
+
+	res := counterIterate(t, chunk1, chunk2)
+
+	//This fails with:
+	//
+	// exp: []downsample.sample{downsample.sample{t:30, v:3}, downsample.sample{t:60, v:7}}
+	//
+	// got: []downsample.sample{downsample.sample{t:30, v:3}, downsample.sample{t:60, v:4}}
+	//
+	// since the reset between t=30 and t=40 can't be detected with just the last raw value and counter state stored in
+	// these aggregated chunks.
+	testutil.Equals(t, []sample{{t: 30, v: 3}, {t: 60, v: 7}}, res)
+
+	// Proof-of-concept: downsample same sections but add the first raw value to each chunk.
+	chunk1 = downsampleOneBatchWithFirstRaw(section1, resolution)
+	chunk2 = downsampleOneBatchWithFirstRaw(section2, resolution)
+	res = counterIterate(t, chunk1, chunk2)
+
+	// This passes: the reset between t=30 and t=40 is accounted for, at the cost of adding
+	// a 'first raw' sample point per chunk.
+	testutil.Equals(t, []sample{{t: 10, v: 1}, {t: 30, v: 3}, {t: 40, v: 5}, {t: 60, v: 7}}, res)
+}
+
 func TestExpandChunkIterator(t *testing.T) {
 	// Validate that expanding the chunk iterator filters out-of-order samples
 	// and staleness markers.
